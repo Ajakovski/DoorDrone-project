@@ -16,5 +16,6 @@
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\User\\Desktop\\DoorDrone\\codes\\blynk wifi\\build"
   ],
-  "idf.flashType": "UART"
+  "idf.flashType": "UART",
+  "idf.currentSetup": "C:\\Users\\User\\esp\\v5.5.1\\esp-idf"
 }
