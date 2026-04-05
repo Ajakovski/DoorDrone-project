@@ -35,7 +35,7 @@ extern "C" {
 // ============================================================
 // Configuration — adjust here, not in imu.c
 // ============================================================
-#define IMU_I2C_SDA_GPIO        4           // GPIO4
+#define IMU_I2C_SDA_GPIO        4           // GPIO412++
 #define IMU_I2C_SCL_GPIO        6           // GPIO6
 #define IMU_I2C_FREQ_HZ         400000      // Fast mode
 #define IMU_MPU6050_ADDR        0x68        // AD0 = GND
