@@ -65,7 +65,7 @@
  *     pitch positive = nose down        (rear motors speed up)
  *     yaw   positive = CW from above    (CCW motors speed up)
  *
- *   M1 = thr - roll - pitch - yaw
+ *   M1 = thr - roll - pitch - yaw ALL INVERTED FOR HOVER MODE
  *   M2 = thr + roll - pitch + yaw
  *   M3 = thr - roll + pitch + yaw
  *   M4 = thr + roll + pitch - yaw
@@ -84,9 +84,9 @@ extern "C" {
 // ============================================================
 // Frame orientation correction — negate if axis is reversed
 // ============================================================
-#define FC_SIGN_ROLL    (+1.0f)
-#define FC_SIGN_PITCH   (+1.0f)
-#define FC_SIGN_YAW     (+1.0f)
+#define FC_SIGN_ROLL    (-1.0f)
+#define FC_SIGN_PITCH   (-1.0f)
+#define FC_SIGN_YAW     (-1.0f)
 
 // ============================================================
 // ESC GPIO assignments

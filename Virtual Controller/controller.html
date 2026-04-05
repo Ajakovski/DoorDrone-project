@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport"
+      content="width=device-width,initial-scale=1.0,maximum-scale=1.0,
+               user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0a0d12">
+<title>Drone RC</title>
+
+<style>
+/* ── Design tokens ─────────────────────────────────────────────────────── */
+:root {
+  --bg:          #0a0d12;
+  --surface:     #131720;
+  --border:      #1e2530;
+  --border-hi:   #2a3545;
+  --text:        #cdd9e5;
+  --muted:       #3d4f62;
+  --accent:      #00c8f0;
+  --green:       #00e87a;
+  --red:         #ff3b3b;
+  --amber:       #ffaa00;
+  --bar-h:       48px;
+  /* Stick diameter: fits two sticks + bar + center panel in landscape */
+  --stick-d:     min(36vw, 44vh);
+}
+
+/* ── Reset ─────────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0; padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+  touch-action: none;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Portrait blocker ──────────────────────────────────────────────────── */
+#pw {
+  display: none;
+  position: fixed; inset: 0; z-index: 1000;
+  background: var(--bg);
+  flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 16px;
+  text-align: center;
+  padding: 24px;
+}
+#pw-icon { font-size: 56px; }
+#pw p    { color: var(--muted); font-size: 13px; letter-spacing: 0.5px; }
+
+@media (orientation: portrait) { #pw { display: flex !important; } }
+
+/* ── Top bar ───────────────────────────────────────────────────────────── */
+#top {
+  display: flex;
+  align-items: center;
+  height: var(--bar-h);
+  padding: 0 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  gap: 10px;
+}
+
+/* Connection pill */
+#conn-pill {
+  display: flex; align-items: center; gap: 5px;
+  padding: 4px 10px;
+  border-radius: 99px;
+  border: 1px solid var(--border-hi);
+  background: rgba(255,255,255,0.03);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  min-width: 110px;
+  transition: border-color 0.3s;
+}
+#conn-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--red);
+  transition: background 0.3s;
+  flex-shrink: 0;
+}
+#conn-dot.ok   { background: var(--green); }
+#conn-dot.wait { background: var(--amber); }
+
+#conn-pill.ok   { border-color: rgba(0,232,122,0.25); }
+#conn-pill.wait { border-color: rgba(255,170,0,0.25); }
+
+/* Arm/disarm buttons */
+#arm-row { display: flex; gap: 6px; margin-left: auto; }
+
+.btn {
+  border: none;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: filter 0.15s;
+}
+.btn:active { filter: brightness(1.3); }
+
+#b-arm {
+  background: #0a2518;
+  color: var(--green);
+  border: 1px solid rgba(0,232,122,0.25);
+  position: relative;
+  overflow: hidden;
+}
+/* Progress bar that fills during hold */
+#b-arm::after {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 0%;
+  background: rgba(0,232,122,0.18);
+  transition: none;
+}
+#b-arm.holding::after { width: 100%; transition: width 700ms linear; }
+
+#b-disarm {
+  background: #250a0a;
+  color: var(--red);
+  border: 1px solid rgba(255,59,59,0.25);
+}
+
+/* Arm state chip */
+#arm-chip {
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border-hi);
+  color: var(--muted);
+  transition: color 0.3s, border-color 0.3s, background 0.3s;
+}
+#arm-chip.armed {
+  color: var(--red);
+  border-color: rgba(255,59,59,0.4);
+  background: rgba(255,59,59,0.08);
+}
+
+/* ── Flight area ───────────────────────────────────────────────────────── */
+#flight {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.zone {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px;
+  min-width: 0;
+  touch-action: none;
+}
+
+/* ── Centre panel ──────────────────────────────────────────────────────── */
+#cp {
+  width: 72px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  border-left:  1px solid var(--border);
+  border-right: 1px solid var(--border);
+  padding: 6px 0;
+}
+
+.ci {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 5px 0;
+  width: 100%;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.ci:last-child { border-bottom: none; }
+
+.ci-l {
+  font-size: 7px;
+  color: var(--muted);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+.ci-v {
+  font-size: 10px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* ── Throttle bar ──────────────────────────────────────────────────────── */
+#tbar {
+  width: 9px;
+  height: var(--stick-d);
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border-hi);
+  border-radius: 5px;
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+#tbar-fill {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 0%;
+  background: linear-gradient(to top, #00e87a, #00c8f0);
+  border-radius: 4px;
+  transition: height 25ms linear;
+}
+
+/* Tick marks at 25/50/75 % */
+#tbar::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0%, transparent calc(25% - 0.5px),
+    rgba(255,255,255,0.10) calc(25% - 0.5px),
+    rgba(255,255,255,0.10) 25%
+  );
+  height: 100%;
+  pointer-events: none;
+}
+
+/* ── Joystick ──────────────────────────────────────────────────────────── */
+.sw {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.sb {
+  width:  var(--stick-d);
+  height: var(--stick-d);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%,
+    rgba(0,200,240,0.04) 0%,
+    rgba(255,255,255,0.015) 70%,
+    transparent 100%);
+  border: 1.5px solid var(--border-hi);
+  position: relative;
+  flex-shrink: 0;
+  touch-action: none;
+  /* Glow ring when active */
+  box-shadow: none;
+  transition: box-shadow 0.2s;
+}
+.sb.active {
+  box-shadow: 0 0 0 1px rgba(0,200,240,0.15),
+              0 0 24px rgba(0,200,240,0.08);
+}
+
+/* Crosshairs */
+.sb::before, .sb::after {
+  content: '';
+  position: absolute;
+  background: rgba(255,255,255,0.05);
+  pointer-events: none;
+}
+.sb::before { width: 100%; height: 1px; top: 50%; left: 0; }
+.sb::after  { width: 1px; height: 100%; left: 50%; top: 0; }
+
+/* Centre dot */
+.sb-ctr {
+  position: absolute;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--border-hi);
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* Knob */
+.sk {
+  position: absolute;
+  width: 21%;
+  height: 21%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 32%,
+    #80f0ff 0%, #0094bb 55%, #004d66 100%);
+  box-shadow:
+    0 0 0 2px rgba(0,200,240,0.20),
+    0 0 18px rgba(0,200,240,0.35),
+    inset 0 1px 2px rgba(255,255,255,0.25);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  will-change: left, top;
+  transition: box-shadow 0.1s;
+}
+
+.sb.active .sk {
+  box-shadow:
+    0 0 0 2px rgba(0,200,240,0.40),
+    0 0 28px rgba(0,200,240,0.55),
+    inset 0 1px 2px rgba(255,255,255,0.30);
+}
+
+.sl { /* stick label */
+  font-size: 8px;
+  color: var(--muted);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+
+/* ── Bottom bar ────────────────────────────────────────────────────────── */
+#bot {
+  display: flex;
+  align-items: center;
+  height: var(--bar-h);
+  padding: 0 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  gap: 10px;
+}
+
+#b-estop {
+  margin: 0 auto;
+  background: #1a0505;
+  color: var(--red);
+  border: 1.5px solid rgba(255,59,59,0.4);
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 8px 28px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+#b-estop:active {
+  background: var(--red);
+  color: #fff;
+}
+
+#stat-l, #stat-r {
+  font-size: 9px;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+  min-width: 70px;
+  white-space: nowrap;
+}
+#stat-r { text-align: right; }
+
+/* ── Latency flash ─────────────────────────────────────────────────────── */
+@keyframes latch { 0%{opacity:.4} 50%{opacity:1} 100%{opacity:.4} }
+.flash { animation: latch 0.25s ease; }
+</style>
+</head>
+<body>
+
+<!-- Portrait blocker -->
+<div id="pw">
+  <div id="pw-icon">📱</div>
+  <div style="font-size:15px;font-weight:700">Rotate to landscape</div>
+  <p>The RC controller requires landscape orientation.<br>
+     Disable rotation lock on your phone.</p>
+</div>
+
+<!-- ── Top bar ──────────────────────────────────────────────────────────── -->
+<div id="top">
+  <div id="conn-pill">
+    <div id="conn-dot"></div>
+    <span id="conn-lbl">Connecting…</span>
+  </div>
+  <div id="arm-chip">DISARMED</div>
+  <div id="arm-row">
+    <button id="b-arm"    class="btn">HOLD TO ARM</button>
+    <button id="b-disarm" class="btn">DISARM</button>
+  </div>
+</div>
+
+<!-- ── Flight area ──────────────────────────────────────────────────────── -->
+<div id="flight">
+
+  <!-- LEFT zone: throttle bar + left stick (THR / YAW) -->
+  <div class="zone" id="zL">
+    <div id="tbar"><div id="tbar-fill"></div></div>
+    <div class="sw">
+      <div class="sb" id="sL">
+        <div class="sb-ctr"></div>
+        <div class="sk" id="kL"></div>
+      </div>
+      <span class="sl">THR · YAW</span>
+    </div>
+  </div>
+
+  <!-- Centre panel -->
+  <div id="cp">
+    <div class="ci"><div class="ci-l">THR</div><div class="ci-v" id="v-thr">1000µs</div></div>
+    <div class="ci"><div class="ci-l">ROLL</div><div class="ci-v" id="v-rol">+0.0°</div></div>
+    <div class="ci"><div class="ci-l">PITCH</div><div class="ci-v" id="v-pit">+0.0°</div></div>
+    <div class="ci"><div class="ci-l">YAW</div><div class="ci-v" id="v-yaw">+0°/s</div></div>
+    <div class="ci"><div class="ci-l">PKT</div><div class="ci-v" id="v-pkt">0</div></div>
+  </div>
+
+  <!-- RIGHT zone: right stick (PITCH / ROLL) -->
+  <div class="zone" id="zR">
+    <div class="sw">
+      <div class="sb" id="sR">
+        <div class="sb-ctr"></div>
+        <div class="sk" id="kR"></div>
+      </div>
+      <span class="sl">PITCH · ROLL</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Bottom bar ───────────────────────────────────────────────────────── -->
+<div id="bot">
+  <div id="stat-l" id="stat-hz">25 Hz</div>
+  <button id="b-estop">■ EMERGENCY STOP</button>
+  <div id="stat-r" id="stat-ms">bridge: --</div>
+</div>
+
+<script>
+'use strict';
+
+// ════════════════════════════════════════════════════════════════════════
+// CONFIG
+// ════════════════════════════════════════════════════════════════════════
+const WS_PORT   = 8765;    // must match --ws-port in web_bridge.py
+const SEND_HZ   = 25;      // control messages per second
+const THR_SCALE = 1.3;     // throttle drag sensitivity (lower = more travel)
+
+// ════════════════════════════════════════════════════════════════════════
+// CONTROL STATE
+// ════════════════════════════════════════════════════════════════════════
+//
+//  Mode 2 (standard):
+//   Left  stick X → Yaw     (spring-return, CW positive)
+//   Left  stick Y → Throttle (persistent — holds where you leave it)
+//   Right stick X → Roll    (spring-return, right-down positive)
+//   Right stick Y → Pitch   (spring-return, nose-down positive)
+//
+//  Sign conventions verified against setpoint.h:
+//   roll    : positive = right side down                  ✓
+//   pitch   : positive = nose down (Mode 2: forward push) ✓
+//   yaw_rate: positive = CW from above                    ✓
+
+let tN = -1.0;   // throttle normalised [-1,+1]  → [1000,2000] µs  (PERSISTENT)
+let yN =  0.0;   // yaw rate normalised [-1,+1]  → [−300,+300] °/s (SPRING)
+let rN =  0.0;   // roll    normalised [-1,+1]  → [−45,+45]   °   (SPRING)
+let pN =  0.0;   // pitch   normalised [-1,+1]  → [−45,+45]   °   (SPRING)
+
+// ════════════════════════════════════════════════════════════════════════
+// DOM
+// ════════════════════════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+const connDot  = $('conn-dot');
+const connLbl  = $('conn-lbl');
+const connPill = $('conn-pill');
+const armChip  = $('arm-chip');
+const bArm     = $('b-arm');
+const bDisarm  = $('b-disarm');
+const bEstop   = $('b-estop');
+const sL = $('sL'),  kL = $('kL');   // left  stick base / knob
+const sR = $('sR'),  kR = $('kR');   // right stick base / knob
+const zL = $('zL'),  zR = $('zR');   // touch zones
+const tbarFill = $('tbar-fill');
+const vThr = $('v-thr'), vRol = $('v-rol');
+const vPit = $('v-pit'), vYaw = $('v-yaw');
+const vPkt = $('v-pkt');
+const statL = $('stat-l'), statR = $('stat-r');
+
+// ════════════════════════════════════════════════════════════════════════
+// KNOB RENDERING
+// ════════════════════════════════════════════════════════════════════════
+//
+// Positions the knob so that:
+//   nx = +1  → knob at rightmost edge
+//   ny = +1  → knob at TOP  (conventional: +Y = up in screen coords = up physically)
+//
+// CSS: left/top address the knob's center (transform: translate(-50%,-50%))
+
+function placeKnob(knob, base, nx, ny) {
+  const r = base.offsetWidth * 0.5;
+  const a = r * 0.74;   // usable radius — keeps knob circle fully inside ring
+  knob.style.left = `${r + nx * a}px`;
+  knob.style.top  = `${r - ny * a}px`;   // minus: positive ny = upward = lower top px
+}
+
+function renderLeft()  { placeKnob(kL, sL, yN, tN); }
+function renderRight() { placeKnob(kR, sR, rN, pN); }
+
+function renderAll() {
+  renderLeft();
+  renderRight();
+  tbarFill.style.height = `${(tN + 1) * 50}%`;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// TOUCH HANDLING
+// ════════════════════════════════════════════════════════════════════════
+//
+// Captured at document level so a fast thumb swipe that exits the zone
+// doesn't orphan the touch.
+
+let ltId = null, ltStartY = null, ltStartTN = null;
+let rtId = null;
+
+document.addEventListener('touchstart',  onTS,  {passive:false});
+document.addEventListener('touchmove',   onTM,  {passive:false});
+document.addEventListener('touchend',    onTE,  {passive:false});
+document.addEventListener('touchcancel', onTE,  {passive:false});
+
+function inEl(touch, el) {
+  const r = el.getBoundingClientRect();
+  return touch.clientX >= r.left && touch.clientX <= r.right
+      && touch.clientY >= r.top  && touch.clientY <= r.bottom;
+}
+
+function onTS(e) {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (ltId === null && inEl(t, zL)) {
+      ltId      = t.identifier;
+      ltStartY  = t.clientY;
+      ltStartTN = tN;
+      sL.classList.add('active');
+      applyLeft(t);
+    }
+    if (rtId === null && inEl(t, zR)) {
+      rtId = t.identifier;
+      sR.classList.add('active');
+      applyRight(t);
+    }
+  }
+}
+
+function onTM(e) {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === ltId) applyLeft(t);
+    if (t.identifier === rtId) applyRight(t);
+  }
+}
+
+function onTE(e) {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === ltId) {
+      ltId = null;
+      yN = 0;           // yaw springs back to centre
+      // tN STAYS — throttle holds at last position
+      sL.classList.remove('active');
+      renderLeft();
+    }
+    if (t.identifier === rtId) {
+      rtId = null;
+      rN = pN = 0;      // roll + pitch spring back
+      sR.classList.remove('active');
+      renderRight();
+    }
+  }
+}
+
+// ── Left stick ────────────────────────────────────────────────────────────
+//
+// Yaw (X axis): absolute position from stick centre.
+//
+// Throttle (Y axis): relative delta from where the thumb first touched.
+//   "Drag up by one full stick radius" = the maximum throttle change.
+//   This prevents the throttle from jumping to a random value on touch.
+
+function applyLeft(t) {
+  const r  = sL.offsetWidth * 0.5;
+  const bx = sL.getBoundingClientRect().left + r;
+
+  yN = clamp((t.clientX - bx) / r, -1, 1);
+
+  const dy = (ltStartY - t.clientY) / (r * THR_SCALE);  // up = positive
+  tN = clamp(ltStartTN + dy, -1, 1);
+
+  renderLeft();
+  tbarFill.style.height = `${(tN + 1) * 50}%`;
+}
+
+// ── Right stick ───────────────────────────────────────────────────────────
+//
+// Absolute position from stick centre, constrained to the circle.
+//
+// Pitch sign: thumb ABOVE centre → dy < 0 → pN > 0 → nose down
+//   (setpoint.h: "pitch positive = nose down"; Mode 2: stick forward = nose down) ✓
+//
+// Roll sign: thumb RIGHT of centre → rN > 0 → right side down ✓
+
+function applyRight(t) {
+  const r  = sR.offsetWidth * 0.5;
+  const rc = sR.getBoundingClientRect();
+  const cx = rc.left + r;
+  const cy = rc.top  + r;
+
+  let dx = t.clientX - cx;
+  let dy = t.clientY - cy;
+
+  // Constrain to the circle (no square-corner clipping)
+  const dist = Math.hypot(dx, dy);
+  if (dist > r) { dx *= r / dist; dy *= r / dist; }
+
+  rN =  dx / r;   // right = positive roll
+  pN = -dy / r;   // up on screen = positive = nose down
+
+  renderRight();
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// VALUE CONVERSIONS
+// ════════════════════════════════════════════════════════════════════════
+const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+const thrUs  = () => Math.round(1000 + (tN + 1) * 500);
+const rollDeg  = () => rN * 45;
+const pitchDeg = () => pN * 45;
+const yawDps   = () => yN * 300;
+const sgn = v => (v >= 0 ? '+' : '') + v.toFixed(1);
+
+// ════════════════════════════════════════════════════════════════════════
+// WEBSOCKET
+// ════════════════════════════════════════════════════════════════════════
+let ws        = null;
+let wsReady   = false;
+let pktTotal  = 0;
+let lastPingT = 0;
+let reconnTO  = null;
+
+function wsConnect() {
+  clearTimeout(reconnTO);
+  setConn('wait', 'Connecting…');
+
+  ws = new WebSocket(`ws://${location.hostname}:${WS_PORT}`);
+
+  ws.onopen = () => {
+    wsReady = true;
+    setConn('ok', `${location.hostname}:${WS_PORT}`);
+  };
+
+  ws.onclose = () => {
+    wsReady = false;
+    setConn('bad', 'Disconnected — retrying…');
+    ws = null;
+    reconnTO = setTimeout(wsConnect, 2500);
+  };
+
+  ws.onerror = () => {};   // onclose fires next
+}
+
+function wsSend(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    const t0 = performance.now();
+    ws.send(JSON.stringify(obj));
+    return performance.now() - t0;   // send() duration (not RTT)
+  }
+  return -1;
+}
+
+function setConn(state, label) {
+  connDot.className  = state === 'ok' ? 'ok' : state === 'wait' ? 'wait' : '';
+  connPill.className = state === 'ok' ? 'ok' : state === 'wait' ? 'wait' : '';
+  connLbl.textContent = label;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// ARM / DISARM
+// ════════════════════════════════════════════════════════════════════════
+//
+// ARM: 700 ms hold required — intentional friction to prevent accidental arm.
+// DISARM: immediate single tap — safety must be instant.
+
+let armed    = false;
+let armTimer = null;
+
+function setArmed(v) {
+  armed = v;
+  if (v) {
+    armChip.textContent = 'ARMED';
+    armChip.classList.add('armed');
+  } else {
+    armChip.textContent = 'DISARMED';
+    armChip.classList.remove('armed');
+  }
+}
+
+function startArmHold() {
+  bArm.classList.add('holding');
+  armTimer = setTimeout(() => {
+    wsSend({ cmd: 'arm' });
+    setArmed(true);
+    armTimer = null;
+  }, 700);
+}
+
+function cancelArmHold() {
+  bArm.classList.remove('holding');
+  clearTimeout(armTimer);
+  armTimer = null;
+}
+
+bArm.addEventListener('touchstart',  startArmHold,  {passive:true});
+bArm.addEventListener('touchend',    cancelArmHold, {passive:true});
+bArm.addEventListener('touchcancel', cancelArmHold, {passive:true});
+bArm.addEventListener('mousedown',   startArmHold);
+bArm.addEventListener('mouseup',     cancelArmHold);
+bArm.addEventListener('mouseleave',  cancelArmHold);
+
+function doDisarm() {
+  cancelArmHold();
+  tN = -1; yN = rN = pN = 0;
+  ltId = rtId = null;
+  sL.classList.remove('active');
+  sR.classList.remove('active');
+  renderAll();
+  wsSend({ cmd: 'disarm' });
+  setArmed(false);
+}
+
+bDisarm.addEventListener('click',      doDisarm);
+bDisarm.addEventListener('touchstart', doDisarm, {passive:true});
+
+bEstop.addEventListener('click',      doDisarm);
+bEstop.addEventListener('touchstart', doDisarm, {passive:true});
+
+// ════════════════════════════════════════════════════════════════════════
+// 25 Hz SEND LOOP
+// ════════════════════════════════════════════════════════════════════════
+//
+// Sends at a fixed rate so the bridge detects "browser went silent"
+// (tab backgrounded, phone locked) within FRESHNESS_S = 300 ms.
+// At 25 Hz, inter-packet gap = 40 ms → bridge sees staleness in < 1 packet
+// interval beyond the 300 ms window.
+
+let lastSendMs = 0;
+
+setInterval(() => {
+  const thr   = thrUs();
+  const roll  = +rollDeg().toFixed(1);
+  const pitch = +pitchDeg().toFixed(1);
+  const yaw   = +yawDps().toFixed(1);
+
+  const dt = performance.now() - lastSendMs;
+  lastSendMs = performance.now();
+
+  wsSend({ cmd:'setpoint', throttle:thr, roll, pitch, yaw_rate:yaw });
+  pktTotal++;
+
+  // Update centre panel
+  vThr.textContent = `${thr}µs`;
+  vRol.textContent = `${roll  >= 0 ? '+' : ''}${roll.toFixed(1)}°`;
+  vPit.textContent = `${pitch >= 0 ? '+' : ''}${pitch.toFixed(1)}°`;
+  vYaw.textContent = `${yaw   >= 0 ? '+' : ''}${yaw.toFixed(0)}°/s`;
+  vPkt.textContent = pktTotal;
+
+  // Pulse pkt counter
+  vPkt.classList.remove('flash');
+  void vPkt.offsetWidth;
+  vPkt.classList.add('flash');
+
+  statL.textContent = `${Math.round(1000/dt)} Hz`;
+  statR.textContent = wsReady ? `ws ✓` : `ws ✗`;
+
+}, Math.round(1000 / SEND_HZ));
+
+// ════════════════════════════════════════════════════════════════════════
+// SCREEN WAKE LOCK
+// ════════════════════════════════════════════════════════════════════════
+//
+// Prevents the phone screen from dimming while flying.
+// Re-acquired if the tab is backgrounded and then foregrounded.
+
+let wakeLock = null;
+
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+  } catch(_) {}
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') requestWakeLock();
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// ORIENTATION LOCK
+// ════════════════════════════════════════════════════════════════════════
+//
+// Attempt to lock orientation via API (works on Android Chrome when
+// the page is in a PWA / fullscreen context; silently fails elsewhere).
+
+if (screen.orientation?.lock) {
+  screen.orientation.lock('landscape').catch(() => {});
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// BOOT
+// ════════════════════════════════════════════════════════════════════════
+window.addEventListener('load', () => {
+  renderAll();
+  wsConnect();
+  requestWakeLock();
+});
+
+window.addEventListener('resize', renderAll);
+
+// Prevent browser context menus on long-press (phone)
+window.addEventListener('contextmenu', e => e.preventDefault());
+</script>
+</body>
+</html>
