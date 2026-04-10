@@ -84,9 +84,9 @@ extern "C" {
 // ============================================================
 // Frame orientation correction — negate if axis is reversed
 // ============================================================
-#define FC_SIGN_ROLL    (-1.0f)
-#define FC_SIGN_PITCH   (-1.0f)
-#define FC_SIGN_YAW     (-1.0f)
+#define FC_SIGN_ROLL    (+1.0f)
+#define FC_SIGN_PITCH   (+1.0f)
+#define FC_SIGN_YAW     (+1.0f)
 
 // ============================================================
 // ESC GPIO assignments
