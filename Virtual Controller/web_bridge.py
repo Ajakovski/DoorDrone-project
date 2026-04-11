@@ -7,12 +7,16 @@ Runs two services on your PC/laptop:
   HTTP  :8080  — serves controller.html (open on phone)
   WS    :8765  — receives JSON from browser, forwards as 12-byte UDP to drone
 
+The bridge forwards the `flags` byte from the browser JSON into the
+UDP packet. The HTML RC controller sets flags=2 (0x02) when the
+emergency landing button is pressed — the drone's FC task detects
+bit 1 and enters EMERGENCY_LEVEL state.
 
 Safety chain:
   Browser sends at 25 Hz → bridge forwards UDP at 50 Hz only while a browser
   setpoint arrived within the last 300 ms. If the phone screen locks, the tab
   backgrounds, or the bridge dies, UDP stops. The ESP32 detects staleness at
-  500 ms (SETPOINT_TIMEOUT_MS) and disarms. No firmware changes needed.
+  600 ms (FC_SETPOINT_STALE_DISARM_MS) and enters emergency landing.
 
 Requirements:
     pip install websockets
@@ -56,28 +60,30 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── UDP packet builder (matches setpoint.h exactly) ───────────────────────────
+# ── UDP packet builder ────────────────────────────────────────────────────────
 #
-# Wire format (12 bytes, big-endian):
+# Wire format (12 bytes, big-endian) — matches setpoint.h exactly:
 #   [0]    0xAB  magic
 #   [1]    0xCD  magic
 #   [2-3]  throttle   uint16  1000–2000 µs
 #   [4-5]  roll       int16   ×10  →  ±450 = ±45.0°
 #   [6-7]  pitch      int16   ×10  →  ±450 = ±45.0°
 #   [8-9]  yaw_rate   int16   ×10  →  ±3000 = ±300.0°/s
-#   [10]   flags      uint8   0
+#   [10]   flags      uint8   bit 1 (0x02) = emergency landing request
 #   [11]   checksum   uint8   XOR of [0..10]
 
 _MAGIC = (0xAB, 0xCD)
 
 
 def build_packet(throttle: int, roll: float,
-                 pitch: float, yaw_rate: float) -> bytes:
+                 pitch: float, yaw_rate: float,
+                 flags: int = 0) -> bytes:
     t = max(1000, min(2000, int(round(throttle))))
     r = max(-450,  min(450,  int(round(roll      * 10))))
     p = max(-450,  min(450,  int(round(pitch     * 10))))
     y = max(-3000, min(3000, int(round(yaw_rate  * 10))))
-    body = struct.pack(">BBHhhhB", _MAGIC[0], _MAGIC[1], t, r, p, y, 0)
+    f = int(flags) & 0xFF
+    body = struct.pack(">BBHhhhB", _MAGIC[0], _MAGIC[1], t, r, p, y, f)
     chk = 0
     for b in body:
         chk ^= b
@@ -85,26 +91,22 @@ def build_packet(throttle: int, roll: float,
 
 
 # ── Shared state ───────────────────────────────────────────────────────────────
-#
-# Written by the asyncio WS handler, read by the asyncio UDP loop.
-# A plain asyncio.Lock is sufficient — no threading issues here.
-
 _lock = asyncio.Lock()
 _sp = {
     "throttle":  1000,
     "roll":      0.0,
     "pitch":     0.0,
     "yaw_rate":  0.0,
-    "fresh_ts":  0.0,   # monotonic time of last valid setpoint; 0 = never
+    "flags":     0,       # forwarded directly into the UDP packet flags byte
+    "fresh_ts":  0.0,     # monotonic time of last valid setpoint; 0 = never
     "clients":   0,
 }
 
 _blynk_token: Optional[str] = None
 _FRESHNESS_S = 0.30    # bridge stops UDP if no setpoint in 300 ms
-_DISARM_S    = 0.50    # ESP32 disarms if no UDP in 500 ms (SETPOINT_TIMEOUT_MS)
 
 
-# ── Blynk REST (called from a daemon thread to avoid blocking asyncio) ────────
+# ── Blynk REST ────────────────────────────────────────────────────────────────
 def _blynk_set_v0(value: str) -> None:
     if not _blynk_token:
         log.warning("Blynk token not set — ARM/DISARM ignored. Pass --blynk TOKEN")
@@ -136,16 +138,24 @@ async def _ws_handler(websocket) -> None:
             cmd = msg.get("cmd")
 
             if cmd == "setpoint":
-                thr = max(1000,   min(2000,   int(msg["throttle"])))
-                rol = max(-45.0,  min(45.0,   float(msg["roll"])))
-                pit = max(-45.0,  min(45.0,   float(msg["pitch"])))
-                yaw = max(-300.0, min(300.0,  float(msg["yaw_rate"])))
+                thr   = max(1000,   min(2000,   int(msg.get("throttle", 1000))))
+                rol   = max(-45.0,  min(45.0,   float(msg.get("roll",      0.0))))
+                pit   = max(-45.0,  min(45.0,   float(msg.get("pitch",     0.0))))
+                yaw   = max(-300.0, min(300.0,  float(msg.get("yaw_rate",  0.0))))
+                flags = int(msg.get("flags", 0)) & 0xFF
+
                 async with _lock:
                     _sp["throttle"]  = thr
                     _sp["roll"]      = rol
                     _sp["pitch"]     = pit
                     _sp["yaw_rate"]  = yaw
+                    _sp["flags"]     = flags
                     _sp["fresh_ts"]  = time.monotonic()
+
+                # Log when emergency flag is first seen
+                if flags & 0x02:
+                    log.warning("Emergency flag (0x02) received from %s — forwarding to drone",
+                                peer[0])
 
             elif cmd == "arm":
                 log.info("ARM  received from %s", peer[0])
@@ -153,13 +163,14 @@ async def _ws_handler(websocket) -> None:
                                  daemon=True).start()
 
             elif cmd == "disarm":
-                log.info("DISARM  received from %s", peer[0])
+                log.info("DISARM (immediate kill) received from %s", peer[0])
                 async with _lock:
                     _sp["throttle"]  = 1000
                     _sp["roll"]      = 0.0
                     _sp["pitch"]     = 0.0
                     _sp["yaw_rate"]  = 0.0
-                    _sp["fresh_ts"]  = 0.0   # immediately stops UDP
+                    _sp["flags"]     = 0
+                    _sp["fresh_ts"]  = 0.0   # stop UDP immediately
                 threading.Thread(target=_blynk_set_v0, args=("0",),
                                  daemon=True).start()
 
@@ -168,18 +179,18 @@ async def _ws_handler(websocket) -> None:
     finally:
         async with _lock:
             _sp["clients"] = max(0, _sp["clients"] - 1)
-            _sp["fresh_ts"] = 0.0    # phone disconnect → stop UDP immediately
-        log.info("WS  ↓  %s  —  UDP halted, drone disarms in ≤%.0f ms if armed",
-                 peer[0], _DISARM_S * 1000)
+            _sp["fresh_ts"] = 0.0   # phone disconnect → stop UDP → drone enters emergency
+        log.info("WS  ↓  %s  —  UDP halted, drone enters emergency landing if armed",
+                 peer[0])
 
 
 # ── 50 Hz UDP sender ──────────────────────────────────────────────────────────
 async def _udp_loop(drone_ip: str, drone_port: int) -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    log.info("UDP  sender → %s:%d  @ 50 Hz  (active only while browser connected)",
-             drone_ip, drone_port)
+    log.info("UDP  sender → %s:%d  @ 50 Hz", drone_ip, drone_port)
 
-    sent = errs = 0
+    sent        = 0
+    errs        = 0
     report_t    = time.monotonic()
     was_active  = False
 
@@ -187,7 +198,8 @@ async def _udp_loop(drone_ip: str, drone_port: int) -> None:
         async with _lock:
             age      = time.monotonic() - _sp["fresh_ts"]
             clients  = _sp["clients"]
-            sp       = (_sp["throttle"], _sp["roll"], _sp["pitch"], _sp["yaw_rate"])
+            sp       = (_sp["throttle"], _sp["roll"], _sp["pitch"],
+                        _sp["yaw_rate"], _sp["flags"])
 
         active = clients > 0 and age < _FRESHNESS_S
 
@@ -212,15 +224,15 @@ async def _udp_loop(drone_ip: str, drone_port: int) -> None:
         if now - report_t >= 10.0:
             if sent or errs:
                 log.info("UDP  stats/10s: %d sent %d errors | "
-                         "THR=%d R=%.1f P=%.1f Y=%.1f",
-                         sent, errs, *sp)
+                         "THR=%d R=%.1f P=%.1f Y=%.1f flags=0x%02X",
+                         sent, errs, sp[0], sp[1], sp[2], sp[3], sp[4])
                 sent = errs = 0
             report_t = now
 
         await asyncio.sleep(0.02)   # 50 Hz
 
 
-# ── HTTP server — serves controller.html in its own thread ───────────────────
+# ── HTTP server ───────────────────────────────────────────────────────────────
 class _QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -244,7 +256,6 @@ async def _amain(args: argparse.Namespace) -> None:
         log.error("controller.html not found next to web_bridge.py — aborting.")
         sys.exit(1)
 
-    # Resolve LAN IP for the startup banner
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -264,6 +275,7 @@ async def _amain(args: argparse.Namespace) -> None:
         log.info("  Blynk token →  %s…  (ARM/DISARM enabled)", args.blynk[:10])
     else:
         log.info("  Blynk token →  not set  (pass --blynk TOKEN to enable ARM button)")
+    log.info("  Emergency   →  HTML button sets UDP flags=0x02 → FC enters EMERGENCY_LEVEL")
     log.info("=" * 66)
 
     udp_task = asyncio.create_task(_udp_loop(args.drone, args.drone_port))

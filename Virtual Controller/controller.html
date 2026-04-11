@@ -24,7 +24,6 @@
   --red:         #ff3b3b;
   --amber:       #ffaa00;
   --bar-h:       48px;
-  /* Stick diameter: fits two sticks + bar + center panel in landscape */
   --stick-d:     min(36vw, 44vh);
 }
 
@@ -100,7 +99,6 @@ body {
 }
 #conn-dot.ok   { background: var(--green); }
 #conn-dot.wait { background: var(--amber); }
-
 #conn-pill.ok   { border-color: rgba(0,232,122,0.25); }
 #conn-pill.wait { border-color: rgba(255,170,0,0.25); }
 
@@ -128,7 +126,6 @@ body {
   position: relative;
   overflow: hidden;
 }
-/* Progress bar that fills during hold */
 #b-arm::after {
   content: '';
   position: absolute;
@@ -160,6 +157,17 @@ body {
   color: var(--red);
   border-color: rgba(255,59,59,0.4);
   background: rgba(255,59,59,0.08);
+}
+#arm-chip.emergency {
+  color: var(--amber);
+  border-color: rgba(255,170,0,0.5);
+  background: rgba(255,170,0,0.10);
+  animation: emerg-pulse 0.6s infinite alternate;
+}
+
+@keyframes emerg-pulse {
+  from { opacity: 0.7; }
+  to   { opacity: 1.0; }
 }
 
 /* ── Flight area ───────────────────────────────────────────────────────── */
@@ -238,8 +246,6 @@ body {
   border-radius: 4px;
   transition: height 25ms linear;
 }
-
-/* Tick marks at 25/50/75 % */
 #tbar::before {
   content: '';
   position: absolute;
@@ -274,7 +280,6 @@ body {
   position: relative;
   flex-shrink: 0;
   touch-action: none;
-  /* Glow ring when active */
   box-shadow: none;
   transition: box-shadow 0.2s;
 }
@@ -283,7 +288,6 @@ body {
               0 0 24px rgba(0,200,240,0.08);
 }
 
-/* Crosshairs */
 .sb::before, .sb::after {
   content: '';
   position: absolute;
@@ -293,7 +297,6 @@ body {
 .sb::before { width: 100%; height: 1px; top: 50%; left: 0; }
 .sb::after  { width: 1px; height: 100%; left: 50%; top: 0; }
 
-/* Centre dot */
 .sb-ctr {
   position: absolute;
   width: 6px; height: 6px;
@@ -304,7 +307,6 @@ body {
   pointer-events: none;
 }
 
-/* Knob */
 .sk {
   position: absolute;
   width: 21%;
@@ -329,7 +331,7 @@ body {
     inset 0 1px 2px rgba(255,255,255,0.30);
 }
 
-.sl { /* stick label */
+.sl {
   font-size: 8px;
   color: var(--muted);
   letter-spacing: 1.5px;
@@ -345,36 +347,74 @@ body {
   background: var(--surface);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
-  gap: 10px;
+  gap: 8px;
 }
 
+/* Emergency stop button — left of centre */
 #b-estop {
-  margin: 0 auto;
   background: #1a0505;
   color: var(--red);
   border: 1.5px solid rgba(255,59,59,0.4);
   border-radius: 5px;
   font-family: inherit;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 1px;
-  padding: 8px 28px;
+  padding: 7px 18px;
   cursor: pointer;
   touch-action: manipulation;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
 }
-#b-estop:active {
+#b-estop:active, #b-estop.triggered {
   background: var(--red);
   color: #fff;
+  border-color: var(--red);
 }
 
-#stat-l, #stat-r {
+/* Emergency LAND button — prominent, centre */
+#b-emerg {
+  flex: 1;
+  max-width: 200px;
+  margin: 0 auto;
+  background: #1a0a00;
+  color: var(--amber);
+  border: 1.5px solid rgba(255,170,0,0.35);
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 7px 0;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  position: relative;
+  overflow: hidden;
+}
+#b-emerg:active, #b-emerg.triggered {
+  background: var(--amber);
+  color: #000;
+  border-color: var(--amber);
+}
+/* Pulsing glow when emergency is active */
+#b-emerg.triggered {
+  animation: emerg-btn-pulse 0.5s infinite alternate;
+}
+@keyframes emerg-btn-pulse {
+  from { box-shadow: 0 0 6px rgba(255,170,0,0.4); }
+  to   { box-shadow: 0 0 18px rgba(255,170,0,0.8); }
+}
+
+#stat-r {
   font-size: 9px;
   color: var(--muted);
   letter-spacing: 0.5px;
-  min-width: 70px;
+  min-width: 55px;
+  text-align: right;
   white-space: nowrap;
+  flex-shrink: 0;
 }
-#stat-r { text-align: right; }
 
 /* ── Latency flash ─────────────────────────────────────────────────────── */
 @keyframes latch { 0%{opacity:.4} 50%{opacity:1} 100%{opacity:.4} }
@@ -443,9 +483,20 @@ body {
 
 <!-- ── Bottom bar ───────────────────────────────────────────────────────── -->
 <div id="bot">
-  <div id="stat-l" id="stat-hz">25 Hz</div>
-  <button id="b-estop">■ EMERGENCY STOP</button>
-  <div id="stat-r" id="stat-ms">bridge: --</div>
+  <!--
+    EMERGENCY STOP (left): immediate disarm — cuts motors now.
+    Use only when the drone is already on the ground or as absolute last resort.
+  -->
+  <button id="b-estop">■ KILL</button>
+
+  <!--
+    EMERGENCY LAND (centre): triggers the safe landing procedure on the drone.
+    Drone levels itself, then descends at landing throttle, then disarms.
+    Use this when you lose control mid-flight.
+  -->
+  <button id="b-emerg">⚠ EMERGENCY LAND</button>
+
+  <div id="stat-r">ws ✗</div>
 </div>
 
 <script>
@@ -454,29 +505,35 @@ body {
 // ════════════════════════════════════════════════════════════════════════
 // CONFIG
 // ════════════════════════════════════════════════════════════════════════
-const WS_PORT   = 8765;    // must match --ws-port in web_bridge.py
-const SEND_HZ   = 25;      // control messages per second
-const THR_SCALE = 1.3;     // throttle drag sensitivity (lower = more travel)
+const WS_PORT   = 8765;
+const SEND_HZ   = 25;
+const THR_SCALE = 1.3;
 
 // ════════════════════════════════════════════════════════════════════════
 // CONTROL STATE
 // ════════════════════════════════════════════════════════════════════════
 //
 //  Mode 2 (standard):
-//   Left  stick X → Yaw     (spring-return, CW positive)
-//   Left  stick Y → Throttle (persistent — holds where you leave it)
-//   Right stick X → Roll    (spring-return, right-down positive)
-//   Right stick Y → Pitch   (spring-return, nose-down positive)
+//   Left  stick X → Yaw rate  (spring-return)
+//   Left  stick Y → Throttle  (persistent — holds where you leave it)
+//   Right stick X → Roll      (spring-return, right-down positive)
+//   Right stick Y → Pitch     (spring-return, nose-down positive)
 //
-//  Sign conventions verified against setpoint.h:
-//   roll    : positive = right side down                  ✓
-//   pitch   : positive = nose down (Mode 2: forward push) ✓
-//   yaw_rate: positive = CW from above                    ✓
+//  UDP flags byte:
+//   0x00 = normal
+//   0x02 = emergency landing request (bit 1)
+//          Sent continuously once emergency is triggered so the drone
+//          catches it even if the first packet is dropped.
 
-let tN = -1.0;   // throttle normalised [-1,+1]  → [1000,2000] µs  (PERSISTENT)
-let yN =  0.0;   // yaw rate normalised [-1,+1]  → [−300,+300] °/s (SPRING)
-let rN =  0.0;   // roll    normalised [-1,+1]  → [−45,+45]   °   (SPRING)
-let pN =  0.0;   // pitch   normalised [-1,+1]  → [−45,+45]   °   (SPRING)
+let tN = -1.0;   // throttle normalised [-1,+1] → [1000,2000] µs  (PERSISTENT)
+let yN =  0.0;   // yaw rate normalised  [-1,+1] → [-300,+300] °/s (SPRING)
+let rN =  0.0;   // roll    normalised   [-1,+1] → [-45,+45]   °   (SPRING)
+let pN =  0.0;   // pitch   normalised   [-1,+1] → [-45,+45]   °   (SPRING)
+
+// Emergency state — once set, flags=0x02 is sent in every packet
+// until the WebSocket connection drops or the page is reloaded.
+// This ensures the drone receives the command even with packet loss.
+let emergencyActive = false;
 
 // ════════════════════════════════════════════════════════════════════════
 // DOM
@@ -489,30 +546,24 @@ const armChip  = $('arm-chip');
 const bArm     = $('b-arm');
 const bDisarm  = $('b-disarm');
 const bEstop   = $('b-estop');
-const sL = $('sL'),  kL = $('kL');   // left  stick base / knob
-const sR = $('sR'),  kR = $('kR');   // right stick base / knob
-const zL = $('zL'),  zR = $('zR');   // touch zones
+const bEmerg   = $('b-emerg');
+const sL = $('sL'),  kL = $('kL');
+const sR = $('sR'),  kR = $('kR');
+const zL = $('zL'),  zR = $('zR');
 const tbarFill = $('tbar-fill');
 const vThr = $('v-thr'), vRol = $('v-rol');
 const vPit = $('v-pit'), vYaw = $('v-yaw');
 const vPkt = $('v-pkt');
-const statL = $('stat-l'), statR = $('stat-r');
+const statR = $('stat-r');
 
 // ════════════════════════════════════════════════════════════════════════
 // KNOB RENDERING
 // ════════════════════════════════════════════════════════════════════════
-//
-// Positions the knob so that:
-//   nx = +1  → knob at rightmost edge
-//   ny = +1  → knob at TOP  (conventional: +Y = up in screen coords = up physically)
-//
-// CSS: left/top address the knob's center (transform: translate(-50%,-50%))
-
 function placeKnob(knob, base, nx, ny) {
   const r = base.offsetWidth * 0.5;
-  const a = r * 0.74;   // usable radius — keeps knob circle fully inside ring
+  const a = r * 0.74;
   knob.style.left = `${r + nx * a}px`;
-  knob.style.top  = `${r - ny * a}px`;   // minus: positive ny = upward = lower top px
+  knob.style.top  = `${r - ny * a}px`;
 }
 
 function renderLeft()  { placeKnob(kL, sL, yN, tN); }
@@ -527,10 +578,6 @@ function renderAll() {
 // ════════════════════════════════════════════════════════════════════════
 // TOUCH HANDLING
 // ════════════════════════════════════════════════════════════════════════
-//
-// Captured at document level so a fast thumb swipe that exits the zone
-// doesn't orphan the touch.
-
 let ltId = null, ltStartY = null, ltStartTN = null;
 let rtId = null;
 
@@ -576,66 +623,40 @@ function onTE(e) {
   for (const t of e.changedTouches) {
     if (t.identifier === ltId) {
       ltId = null;
-      yN = 0;           // yaw springs back to centre
-      // tN STAYS — throttle holds at last position
+      yN = 0;
       sL.classList.remove('active');
       renderLeft();
     }
     if (t.identifier === rtId) {
       rtId = null;
-      rN = pN = 0;      // roll + pitch spring back
+      rN = pN = 0;
       sR.classList.remove('active');
       renderRight();
     }
   }
 }
 
-// ── Left stick ────────────────────────────────────────────────────────────
-//
-// Yaw (X axis): absolute position from stick centre.
-//
-// Throttle (Y axis): relative delta from where the thumb first touched.
-//   "Drag up by one full stick radius" = the maximum throttle change.
-//   This prevents the throttle from jumping to a random value on touch.
-
 function applyLeft(t) {
   const r  = sL.offsetWidth * 0.5;
   const bx = sL.getBoundingClientRect().left + r;
-
   yN = clamp((t.clientX - bx) / r, -1, 1);
-
-  const dy = (ltStartY - t.clientY) / (r * THR_SCALE);  // up = positive
+  const dy = (ltStartY - t.clientY) / (r * THR_SCALE);
   tN = clamp(ltStartTN + dy, -1, 1);
-
   renderLeft();
   tbarFill.style.height = `${(tN + 1) * 50}%`;
 }
-
-// ── Right stick ───────────────────────────────────────────────────────────
-//
-// Absolute position from stick centre, constrained to the circle.
-//
-// Pitch sign: thumb ABOVE centre → dy < 0 → pN > 0 → nose down
-//   (setpoint.h: "pitch positive = nose down"; Mode 2: stick forward = nose down) ✓
-//
-// Roll sign: thumb RIGHT of centre → rN > 0 → right side down ✓
 
 function applyRight(t) {
   const r  = sR.offsetWidth * 0.5;
   const rc = sR.getBoundingClientRect();
   const cx = rc.left + r;
   const cy = rc.top  + r;
-
   let dx = t.clientX - cx;
   let dy = t.clientY - cy;
-
-  // Constrain to the circle (no square-corner clipping)
   const dist = Math.hypot(dx, dy);
   if (dist > r) { dx *= r / dist; dy *= r / dist; }
-
-  rN =  dx / r;   // right = positive roll
-  pN = -dy / r;   // up on screen = positive = nose down
-
+  rN =  dx / r;
+  pN = -dy / r;
   renderRight();
 }
 
@@ -643,11 +664,10 @@ function applyRight(t) {
 // VALUE CONVERSIONS
 // ════════════════════════════════════════════════════════════════════════
 const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
-const thrUs  = () => Math.round(1000 + (tN + 1) * 500);
+const thrUs    = () => Math.round(1000 + (tN + 1) * 500);
 const rollDeg  = () => rN * 45;
 const pitchDeg = () => pN * 45;
 const yawDps   = () => yN * 300;
-const sgn = v => (v >= 0 ? '+' : '') + v.toFixed(1);
 
 // ════════════════════════════════════════════════════════════════════════
 // WEBSOCKET
@@ -655,13 +675,11 @@ const sgn = v => (v >= 0 ? '+' : '') + v.toFixed(1);
 let ws        = null;
 let wsReady   = false;
 let pktTotal  = 0;
-let lastPingT = 0;
 let reconnTO  = null;
 
 function wsConnect() {
   clearTimeout(reconnTO);
   setConn('wait', 'Connecting…');
-
   ws = new WebSocket(`ws://${location.hostname}:${WS_PORT}`);
 
   ws.onopen = () => {
@@ -676,16 +694,13 @@ function wsConnect() {
     reconnTO = setTimeout(wsConnect, 2500);
   };
 
-  ws.onerror = () => {};   // onclose fires next
+  ws.onerror = () => {};
 }
 
 function wsSend(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    const t0 = performance.now();
     ws.send(JSON.stringify(obj));
-    return performance.now() - t0;   // send() duration (not RTT)
   }
-  return -1;
 }
 
 function setConn(state, label) {
@@ -697,10 +712,6 @@ function setConn(state, label) {
 // ════════════════════════════════════════════════════════════════════════
 // ARM / DISARM
 // ════════════════════════════════════════════════════════════════════════
-//
-// ARM: 700 ms hold required — intentional friction to prevent accidental arm.
-// DISARM: immediate single tap — safety must be instant.
-
 let armed    = false;
 let armTimer = null;
 
@@ -708,14 +719,18 @@ function setArmed(v) {
   armed = v;
   if (v) {
     armChip.textContent = 'ARMED';
-    armChip.classList.add('armed');
+    armChip.className   = 'armed';
+  } else if (emergencyActive) {
+    armChip.textContent = 'EMERG LAND';
+    armChip.className   = 'emergency';
   } else {
     armChip.textContent = 'DISARMED';
-    armChip.classList.remove('armed');
+    armChip.className   = '';
   }
 }
 
 function startArmHold() {
+  if (emergencyActive) return; // block arm during emergency
   bArm.classList.add('holding');
   armTimer = setTimeout(() => {
     wsSend({ cmd: 'arm' });
@@ -737,31 +752,58 @@ bArm.addEventListener('mousedown',   startArmHold);
 bArm.addEventListener('mouseup',     cancelArmHold);
 bArm.addEventListener('mouseleave',  cancelArmHold);
 
-function doDisarm() {
+// ── Immediate disarm (KILL) ───────────────────────────────────────────
+// Cuts motors immediately via Blynk V0=0 through the bridge.
+// Use only when drone is on the ground or as absolute last resort.
+function doImmediateDisarm() {
   cancelArmHold();
+  emergencyActive = false;
   tN = -1; yN = rN = pN = 0;
   ltId = rtId = null;
   sL.classList.remove('active');
   sR.classList.remove('active');
   renderAll();
+  bEmerg.classList.remove('triggered');
   wsSend({ cmd: 'disarm' });
   setArmed(false);
+  bEstop.classList.add('triggered');
+  setTimeout(() => bEstop.classList.remove('triggered'), 400);
 }
 
-bDisarm.addEventListener('click',      doDisarm);
-bDisarm.addEventListener('touchstart', doDisarm, {passive:true});
+// ── Emergency landing ─────────────────────────────────────────────────
+// Sets flags bit 1 (0x02) in every subsequent UDP packet.
+// The drone's FC task detects this flag and enters EMERGENCY_LEVEL state.
+// The pilot should NOT try to disarm manually — let the procedure complete.
+function doEmergencyLand() {
+  if (!armed && !emergencyActive) return; // no point if already disarmed
+  emergencyActive = true;
+  bEmerg.classList.add('triggered');
+  bEmerg.textContent = '⚠ LANDING…';
+  armChip.textContent = 'EMERG LAND';
+  armChip.className   = 'emergency';
+  // Do NOT call wsSend cmd:disarm — we want UDP to keep flowing with flag 0x02
+  // so the drone receives the emergency command even if one packet is dropped.
+}
 
-bEstop.addEventListener('click',      doDisarm);
-bEstop.addEventListener('touchstart', doDisarm, {passive:true});
+bDisarm.addEventListener('click',      doImmediateDisarm);
+bDisarm.addEventListener('touchstart', doImmediateDisarm, {passive:true});
+
+bEstop.addEventListener('click',      doImmediateDisarm);
+bEstop.addEventListener('touchstart', doImmediateDisarm, {passive:true});
+
+bEmerg.addEventListener('click',      doEmergencyLand);
+bEmerg.addEventListener('touchstart', doEmergencyLand, {passive:true});
 
 // ════════════════════════════════════════════════════════════════════════
 // 25 Hz SEND LOOP
 // ════════════════════════════════════════════════════════════════════════
 //
-// Sends at a fixed rate so the bridge detects "browser went silent"
-// (tab backgrounded, phone locked) within FRESHNESS_S = 300 ms.
-// At 25 Hz, inter-packet gap = 40 ms → bridge sees staleness in < 1 packet
-// interval beyond the 300 ms window.
+// flags = 0x00 during normal flight.
+// flags = 0x02 when emergencyActive — sent every packet so the drone
+//   catches it even with occasional UDP loss.
+//
+// The bridge (web_bridge.py) forwards this to the drone as the flags
+// byte in the 12-byte UDP packet. The FC task checks sp.flags & 0x02.
 
 let lastSendMs = 0;
 
@@ -770,26 +812,25 @@ setInterval(() => {
   const roll  = +rollDeg().toFixed(1);
   const pitch = +pitchDeg().toFixed(1);
   const yaw   = +yawDps().toFixed(1);
+  const flags = emergencyActive ? 2 : 0;  // 0x02 = emergency land
 
   const dt = performance.now() - lastSendMs;
   lastSendMs = performance.now();
 
-  wsSend({ cmd:'setpoint', throttle:thr, roll, pitch, yaw_rate:yaw });
+  wsSend({ cmd:'setpoint', throttle:thr, roll, pitch, yaw_rate:yaw, flags });
   pktTotal++;
 
-  // Update centre panel
+  // Centre panel update
   vThr.textContent = `${thr}µs`;
   vRol.textContent = `${roll  >= 0 ? '+' : ''}${roll.toFixed(1)}°`;
   vPit.textContent = `${pitch >= 0 ? '+' : ''}${pitch.toFixed(1)}°`;
   vYaw.textContent = `${yaw   >= 0 ? '+' : ''}${yaw.toFixed(0)}°/s`;
   vPkt.textContent = pktTotal;
 
-  // Pulse pkt counter
   vPkt.classList.remove('flash');
   void vPkt.offsetWidth;
   vPkt.classList.add('flash');
 
-  statL.textContent = `${Math.round(1000/dt)} Hz`;
   statR.textContent = wsReady ? `ws ✓` : `ws ✗`;
 
 }, Math.round(1000 / SEND_HZ));
@@ -797,17 +838,11 @@ setInterval(() => {
 // ════════════════════════════════════════════════════════════════════════
 // SCREEN WAKE LOCK
 // ════════════════════════════════════════════════════════════════════════
-//
-// Prevents the phone screen from dimming while flying.
-// Re-acquired if the tab is backgrounded and then foregrounded.
-
 let wakeLock = null;
 
 async function requestWakeLock() {
   if (!('wakeLock' in navigator)) return;
-  try {
-    wakeLock = await navigator.wakeLock.request('screen');
-  } catch(_) {}
+  try { wakeLock = await navigator.wakeLock.request('screen'); } catch(_) {}
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -817,10 +852,6 @@ document.addEventListener('visibilitychange', () => {
 // ════════════════════════════════════════════════════════════════════════
 // ORIENTATION LOCK
 // ════════════════════════════════════════════════════════════════════════
-//
-// Attempt to lock orientation via API (works on Android Chrome when
-// the page is in a PWA / fullscreen context; silently fails elsewhere).
-
 if (screen.orientation?.lock) {
   screen.orientation.lock('landscape').catch(() => {});
 }
@@ -835,8 +866,6 @@ window.addEventListener('load', () => {
 });
 
 window.addEventListener('resize', renderAll);
-
-// Prevent browser context menus on long-press (phone)
 window.addEventListener('contextmenu', e => e.preventDefault());
 </script>
 </body>

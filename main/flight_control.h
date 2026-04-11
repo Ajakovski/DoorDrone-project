@@ -3,74 +3,44 @@
 /*
  * flight_control.h — Cascade PID Flight Controller (Phase 3)
  *
- * Phase 3 adds the outer angle loop (P controller) on top of the Phase 2
- * inner rate PID. The two loops run sequentially every 10 ms inside the
- * same 100 Hz Core 1 task.
+ * Emergency landing procedure replaces immediate disarm for all
+ * communication-loss and remote emergency trigger scenarios.
  *
- * ── Cascade architecture ────────────────────────────────────────────────
+ * State machine:
  *
- *   Stick (roll/pitch °, yaw °/s)
- *          │
- *     ┌────▼────────────────────────────────────┐
- *     │  OUTER LOOP — Angle controller (P only)  │  100 Hz
- *     │                                          │
- *     │  input : stick angle  (°)                │
- *     │  sensor: imu.roll / imu.pitch (CF fused) │
- *     │  output: target rate  (°/s)              │
- *     └────┬─────────────────────────────────────┘
- *          │  target rate (°/s)   [clamped ±FC_OUTER_RATE_LIMIT]
- *     ┌────▼────────────────────────────────────┐
- *     │  INNER LOOP — Rate controller (PID)      │  100 Hz
- *     │                                          │
- *     │  input : target rate  (°/s)              │
- *     │  sensor: imu.gyro_x/y/z  (raw gyro)      │
- *     │  output: torque correction (µs)          │
- *     └────┬─────────────────────────────────────┘
- *          │  per-axis correction (µs)
- *     ┌────▼──────────┐
- *     │  Motor Mixer   │  Quad-X
- *     └────┬──────────┘
- *          │  M1–M4 (µs)
- *     MCPWM → ESCs
+ *   DISARMED
+ *     └─[arm()]──► ARMED_NORMAL
+ *                    │
+ *                    ├─[link loss / MQTT drop / UDP flags bit 1 (0x02)]──►
+ *                    │
+ *                 EMERGENCY_LEVEL  (hold throttle, force roll/pitch → 0°, max 2s)
+ *                    │
+ *                    ├─[|roll|<5° AND |pitch|<5°]  OR  [timeout 2s]──►
+ *                    │
+ *                 EMERGENCY_LAND   (fixed FC_LANDING_THROTTLE_US for FC_LANDING_DURATION_MS)
+ *                    │
+ *                    └─[duration elapsed]──► DISARMED
  *
- * ── Why outer loop is P-only ────────────────────────────────────────────
+ * IMU failure is out of scope — IMU is assumed healthy during all
+ * emergency procedures.
  *
- *   The outer plant already contains an integrator: angular rate integrates
- *   to angle. Adding I to the outer loop gives double integration, which
- *   causes low-frequency oscillation. The inner I term handles steady-state
- *   disturbances (off-centre CoG, prop imbalance). Outer D is omitted
- *   because the CF filter introduces phase lag that makes D unstable.
+ * Manual disarm (Blynk V0) always goes directly to DISARMED immediately —
+ * it is a deliberate pilot command, not a fault condition.
  *
- * ── Yaw note ────────────────────────────────────────────────────────────
+ * UDP flags byte:
+ *   bit 0 (0x01) — reserved (future use)
+ *   bit 1 (0x02) — EMERGENCY: triggers emergency landing procedure
  *
- *   Yaw has no outer angle loop. The stick yaw_rate is fed directly into
- *   the inner rate PID as a rate setpoint (heading-hold mode requires a
- *   magnetometer, which is not fitted). This is standard for rate-mode yaw.
- *
- * ── Motor Layout (Quad-X, viewed from above) ────────────────────────────
- *
- *   M2 (FL CCW) ──── M1 (FR CW)
- *        │    [FRONT]    │
- *        │     ──X──     │
- *        │               │
- *   M4 (RL CW)  ──── M3 (RR CCW)
- *
- *   M1 → ESC1 → GPIO1      M3 → ESC3 → GPIO10
- *   M2 → ESC2 → GPIO5      M4 → ESC4 → GPIO11
- *
- * ── Quad-X motor mixing ─────────────────────────────────────────────────
- *
- *   Sign convention (correct once confirmed in Phase 2):
- *     roll  positive = right side down  (left motors speed up)
- *     pitch positive = nose down        (rear motors speed up)
- *     yaw   positive = CW from above    (CCW motors speed up)
- *
- *   M1 = thr - roll - pitch - yaw ALL INVERTED FOR HOVER MODE
- *   M2 = thr + roll - pitch + yaw
- *   M3 = thr - roll + pitch + yaw
- *   M4 = thr + roll + pitch - yaw
- *
- *   Negate FC_SIGN_ROLL / _PITCH / _YAW if your frame responds backwards.
+ * Blynk virtual pin map:
+ *   V0  → ARM/DISARM (1=arm, 0=immediate disarm)
+ *   V2  → Roll  telemetry (°)       [read-only]
+ *   V3  → Pitch telemetry (°)       [read-only]
+ *   V4  → Yaw   telemetry (°)       [read-only]
+ *   V5  → Outer loop Kp (roll=pitch, float 0.0–20.0)
+ *   V6  → LED
+ *   V7  → ESC calibration trigger
+ *   V8  → Motor test select (1–4)
+ *   V9  → Motor test pulse (µs)
  */
 
 #include <stdint.h>
@@ -101,82 +71,99 @@ extern "C" {
 // ============================================================
 #define FC_ESC_MIN_US           1000
 #define FC_ESC_MAX_US           2000
-#define FC_MOTOR_MIN_ARMED_US   1050    // Minimum while armed — keeps motors spinning
-#define FC_THROTTLE_IDLE_US     1080    // Below this → idle, PID integrators reset
+#define FC_MOTOR_MIN_ARMED_US   1050
+#define FC_THROTTLE_IDLE_US     1080
 
 // ============================================================
-// Outer loop (angle) — Phase 3
+// Emergency landing parameters — tune on bench before flight
 //
-//   Max rate the outer loop can command the inner loop.
-//   At full stick deflection (±45°) the outer loop will command ±FC_OUTER_RATE_LIMIT.
+// FC_LANDING_THROTTLE_US:
+//   Motors spin but cannot sustain hover — drone sinks steadily.
+//   Find this with props on over a soft surface.
+//   Start at 1100, increase until drone barely sinks, back off 50us.
 //
-//   Starting Kp: 4.5 — conservative for first tethered flights.
-//   If the drone oscillates at hover: reduce Kp.
-//   If the drone is sluggish / drifts: increase Kp slightly.
-//   Do NOT add Ki or Kd to the outer loop — see header comment above.
+// FC_LANDING_DURATION_MS:
+//   Time at landing throttle before automatic disarm.
+//   5000ms = 5 seconds. Increase if regularly flying above ~2m.
+//
+// FC_EMERGENCY_LEVEL_TIMEOUT_MS:
+//   Max time in leveling phase before proceeding to land regardless.
+//
+// FC_LEVEL_THRESHOLD_DEG:
+//   Attitude "close enough to level" to begin descent.
 // ============================================================
-#define FC_OUTER_RATE_LIMIT     200.0f  // °/s — outer loop output clamp
+#define FC_LANDING_THROTTLE_US          1250
+#define FC_LANDING_DURATION_MS          5000
+#define FC_EMERGENCY_LEVEL_TIMEOUT_MS   2000
+#define FC_LEVEL_THRESHOLD_DEG          5.0f
 
-#define FC_ANGLE_ROLL_KP        4.5f    // P gain for roll angle loop
-#define FC_ANGLE_PITCH_KP       4.5f    // P gain for pitch angle loop
-
-// Max stick angle setpoint (must match setpoint.h limits — both are ±45°)
+// ============================================================
+// Outer loop (angle) — P-only
+// ============================================================
+#define FC_OUTER_RATE_LIMIT     200.0f
+#define FC_ANGLE_ROLL_KP        3.0f
+#define FC_ANGLE_PITCH_KP       3.0f
 #define FC_MAX_ANGLE_DEG        45.0f
 
 // ============================================================
-// Inner loop (rate) — carried forward from Phase 2
-//
-//   Tuning order (already done in Phase 2):
-//     1. Kp until borderline oscillation, then back off ~20%
-//     2. Kd to damp Kp oscillation
-//     3. Ki only if steady-state drift persists at hover
-//
-//   With the outer loop now closing the angle, inner Kp may
-//   need slight reduction if the cascade feels overly aggressive.
+// Inner loop (rate) — PID (I and D currently zero)
 // ============================================================
-#define FC_ROLL_KP      1.0f
+#define FC_ROLL_KP      0.8f
 #define FC_ROLL_KI      0.0f
-#define FC_ROLL_KD      0.0f
+#define FC_ROLL_KD      0.005f
 
-#define FC_PITCH_KP     1.0f
+#define FC_PITCH_KP     0.8f
 #define FC_PITCH_KI     0.0f
-#define FC_PITCH_KD     0.0f
+#define FC_PITCH_KD     0.005f
 
-#define FC_YAW_KP       2.0f
+#define FC_YAW_KP       1.6f
 #define FC_YAW_KI       0.0f
 #define FC_YAW_KD       0.0f
 
 // ============================================================
-// PID limits per axis (µs — inner; °/s — outer is bounded by FC_OUTER_RATE_LIMIT)
+// PID limits
 // ============================================================
 #define FC_PID_OUTPUT_LIMIT     300.0f
 #define FC_PID_INTEGRAL_LIMIT   150.0f
 
 // ============================================================
-// Safety
+// Safety timing
 // ============================================================
 #define FC_SETPOINT_STALE_DISARM_MS     600
 #define FC_PERIOD_MS                     10     // 100 Hz
 
 // ============================================================
-// Status struct — thread-safe snapshot for main.c / logging
+// Flight state enum
+// ============================================================
+typedef enum {
+    FC_STATE_DISARMED           = 0,
+    FC_STATE_ARMED_NORMAL       = 1,
+    FC_STATE_EMERGENCY_LEVEL    = 2,    // Phase 1: level drone, hold throttle
+    FC_STATE_EMERGENCY_LAND     = 3,    // Phase 2: fixed landing throttle then disarm
+} fc_flight_state_t;
+
+// ============================================================
+// Status struct — thread-safe snapshot for telemetry and logging
 // ============================================================
 typedef struct {
-    bool     armed;
+    fc_flight_state_t state;
 
-    // Outer loop (angle)
-    float    angle_sp[2];       // Setpoint roll/pitch (°)   [0=roll, 1=pitch]
-    float    angle_meas[2];     // Measured roll/pitch (°)   from complementary filter
-    float    angle_err[2];      // Error (°)                 sp − meas
-    float    angle_pid_out[2];  // Outer P output (°/s)      → inner setpoint
+    // Outer loop (angle controller)
+    float    angle_sp[2];           // Setpoint   [0=roll, 1=pitch] (deg)
+    float    angle_meas[2];         // Measured   [0=roll, 1=pitch] (deg)
+    float    angle_err[2];          // Error      sp - meas         (deg)
+    float    angle_pid_out[2];      // P output → rate setpoint     (deg/s)
 
-    // Inner loop (rate)
-    float    rate_sp[3];        // Setpoint rate  (°/s)      [0=roll,1=pitch,2=yaw]
-    float    rate_meas[3];      // Measured rate  (°/s)      from raw gyro
-    float    rate_pid_out[3];   // Inner PID output (µs)
+    // Inner loop (rate controller)
+    float    rate_sp[3];            // Setpoint   [0=roll,1=pitch,2=yaw] (deg/s)
+    float    rate_meas[3];          // Measured   raw gyro               (deg/s)
+    float    rate_pid_out[3];       // PID output → mixer input          (us)
 
     // Motor outputs
-    uint16_t motor_us[4];       // PWM µs [M1, M2, M3, M4]
+    uint16_t motor_us[4];           // PWM [M1, M2, M3, M4] (us)
+
+    // Emergency timing — ms remaining in current emergency phase, 0 if normal
+    uint32_t emergency_phase_ms_remaining;
 
     uint32_t loop_count;
 } fc_status_t;
@@ -186,37 +173,51 @@ typedef struct {
 // ============================================================
 
 /**
- * @brief Initialise MCPWM and start the 100 Hz control task on Core 1.
- *        Call AFTER imu_init() and setpoint_init().
+ * @brief Initialise MCPWM, PID instances, and start 100 Hz task on Core 1.
+ *        Call AFTER imu_init().
  */
 esp_err_t flight_control_init(void);
 
 /**
- * @brief Arm — enables PID loop. Refuses if IMU unhealthy.
+ * @brief Arm the drone. Refuses if IMU unhealthy or not in DISARMED state.
+ *        Resets yaw reference and all PID state.
  */
 void flight_control_arm(void);
 
 /**
- * @brief Disarm — motors to minimum, all PID state reset.
+ * @brief Immediate disarm — motors to minimum, all PID state reset.
+ *        USE ONLY for intentional pilot-commanded disarm (Blynk V0).
+ *        For fault conditions, call flight_control_trigger_emergency() instead.
  */
 void flight_control_disarm(void);
 
-/** @brief Returns true while armed. */
+/**
+ * @brief Trigger the emergency landing procedure.
+ *        Phase 1: level drone (max FC_EMERGENCY_LEVEL_TIMEOUT_MS).
+ *        Phase 2: FC_LANDING_THROTTLE_US for FC_LANDING_DURATION_MS.
+ *        Disarms automatically after Phase 2 completes.
+ *        Safe to call from any task. No-op if already in emergency or disarmed.
+ */
+void flight_control_trigger_emergency(void);
+
+/** @brief Returns true only when in ARMED_NORMAL state. */
 bool flight_control_is_armed(void);
+
+/** @brief Returns current flight state. */
+fc_flight_state_t flight_control_get_state(void);
 
 /** @brief Thread-safe status snapshot. */
 void flight_control_get_status(fc_status_t *out);
 
 /**
- * @brief Update outer (angle) P gains at runtime.
- *        Resets all PID state when called.
- *        Safe to call while armed — takes effect on the next loop tick.
+ * @brief Update outer (angle) P gains at runtime via Blynk V5.
+ *        Resets all PID state. Safe to call while armed.
  */
 void flight_control_set_angle_gains(float roll_kp, float pitch_kp);
 
 /**
  * @brief Update inner (rate) PID gains at runtime.
- *        Resets all PID state when called.
+ *        Resets all PID state.
  */
 void flight_control_set_rate_gains(
     float roll_kp,  float roll_ki,  float roll_kd,
@@ -224,13 +225,13 @@ void flight_control_set_rate_gains(
     float yaw_kp,   float yaw_ki,   float yaw_kd);
 
 /**
- * @brief ESC calibration sequence (blocking ~10 s). Must be DISARMED.
+ * @brief ESC calibration sequence (blocking ~10s). Must be DISARMED.
  */
 void flight_control_calibrate_escs(void);
 
 /**
  * @brief Spin one motor at a specific pulse, all others at minimum.
- *        For bench testing. DISARMED only.
+ *        For bench testing only. DISARMED state required.
  */
 void flight_control_motor_test(int motor_num, uint16_t pulse_us);
 
